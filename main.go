@@ -16,9 +16,7 @@ func main() {
 		EntryPoints: []string{"src/entry.server.tsx"},
 		Outfile:     "bundle.server.js",
 		Bundle:      true,
-		//Write:       true,
-		Format:     esbuild.FormatESModule,
-		GlobalName: "Bundle",
+		Format:      esbuild.FormatESModule,
 	})
 	if len(result.Errors) > 0 {
 		for _, err := range result.Errors {
@@ -59,6 +57,8 @@ func main() {
 	textEncoderCtor.SetConstructor(c.GetGlobalObject())
 
 	globalObject := c.GetGlobalObject()
+
+	c.Eval(`console = {}; void 0`, "", quickjs.EvalTypeGlobal)
 
 	globalObject.DefinePropertyValue("TextEncoder", textEncoderCtor, quickjs.PropConfigurable)
 
