@@ -1,93 +1,75 @@
 package main
 
 import (
-	_ "embed"
-	"fmt"
+	"context"
 	"log"
-	"os"
+	"runtime"
+	"time"
 
-	"github.com/lujjjh/ssr/quickjs"
+	"github.com/jackc/puddle"
+	v8 "github.com/lujjjh/ssr/v8"
+	"github.com/valyala/fasthttp"
 
 	esbuild "github.com/evanw/esbuild/pkg/api"
 )
 
 func main() {
-	result := esbuild.Build(esbuild.BuildOptions{
+	bundleContent := esbuild.Build(esbuild.BuildOptions{
 		EntryPoints: []string{"src/entry.server.tsx"},
-		Outfile:     "bundle.server.js",
+		Outfile:     "dist/entry.server.mjs",
 		Bundle:      true,
+		Target:      esbuild.ES2017,
 		Format:      esbuild.FormatESModule,
-	})
-	if len(result.Errors) > 0 {
-		for _, err := range result.Errors {
-			fmt.Fprintln(os.Stderr, err.Text)
+	}).OutputFiles[0].Contents
+
+	v8.Initialize()
+	defer v8.Dispose()
+
+	type entry struct {
+		c *v8.Context
+		f *v8.Value
+	}
+
+	pool := puddle.NewPool(func(ctx context.Context) (res interface{}, err error) {
+		isolate := v8.NewIsolate()
+		c := isolate.NewContext()
+
+		polyfillModule, _ := isolate.CompileModule(`
+			globalThis.TextEncoder = function TextEncoder() {};
+			TextEncoder.prototype.encode = function () {};
+	
+			const console = globalThis.console = {};
+		`, "polyfill.js")
+		defer polyfillModule.Dispose()
+		polyfillModule.Run(c)
+
+		module, _ := isolate.CompileModule(string(bundleContent), "main.js")
+		defer module.Dispose()
+
+		f := module.Run(c)
+
+		return entry{c, f}, nil
+	}, func(res interface{}) {
+		e := res.(entry)
+		e.f.Dispose()
+		e.c.Dispose()
+		e.c.Isolate().Dispose()
+	}, int32(runtime.NumCPU()))
+
+	log.Println("Listening on :3000")
+
+	log.Fatal(fasthttp.ListenAndServe(":3000", func(c *fasthttp.RequestCtx) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		resource, err := pool.Acquire(ctx)
+		if err != nil {
+			c.Error("Failed to acquire SSR runtime", fasthttp.StatusInternalServerError)
+			return
 		}
-		return
-	}
+		defer resource.Release()
 
-	textEncoderClassID := quickjs.NewClassID()
-
-	r := quickjs.NewRuntime()
-	defer r.Free()
-
-	err := quickjs.NewClass(r, textEncoderClassID, quickjs.ClassDef{
-		ClassName: "TextEncoder",
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	c := r.NewContext()
-	defer c.Free()
-
-	textEncoderClassID.SetProto(c, c.GetGlobalObject())
-
-	textEncoderEncode := c.NewGoFunction(func(c quickjs.Context, this quickjs.Value, args ...quickjs.Value) quickjs.Value {
-		return c.Undefined()
-	}, 0, 0)
-	defer textEncoderEncode.Free()
-	c.GetGlobalObject().DefinePropertyValue("encode", textEncoderEncode, quickjs.PropConfigurable|quickjs.PropWritable|quickjs.PropEnumerable)
-
-	textEncoderCtor := c.NewGoFunction(func(c quickjs.Context, this quickjs.Value, args ...quickjs.Value) quickjs.Value {
-		return c.NewClassInstance(textEncoderClassID)
-	}, 0, 1)
-	defer textEncoderCtor.Free()
-
-	textEncoderCtor.SetConstructorBit(true)
-	textEncoderCtor.SetConstructor(c.GetGlobalObject())
-
-	globalObject := c.GetGlobalObject()
-
-	c.Eval(`console = {}; void 0`, "", quickjs.EvalTypeGlobal)
-
-	globalObject.DefinePropertyValue("TextEncoder", textEncoderCtor, quickjs.PropConfigurable)
-
-	module := c.Eval(string(result.OutputFiles[0].Contents), result.OutputFiles[0].Path, quickjs.EvalTypeModule|quickjs.EvalFlagCompileOnly)
-	defer module.Free()
-
-	if module.IsException() {
-		e := c.GetException()
-		defer e.Free()
-		panic(e)
-	}
-
-	value := c.EvalFunction(module)
-	if value.IsException() {
-		e := c.GetException()
-		defer e.Free()
-		log.Println(e)
-	}
-
-	entry := c.GetModuleExport(module, "default")
-	defer entry.Free()
-
-	value = entry.Call(c.Undefined())
-	defer value.Free()
-	if value.IsException() {
-		e := c.GetException()
-		defer e.Free()
-		log.Println(e)
-	}
-
-	log.Println(value)
+		e := resource.Value().(entry)
+		c.SuccessString("text/html", e.f.Call().String())
+	}))
 }

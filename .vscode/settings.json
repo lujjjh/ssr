@@ -1,3 +1,28 @@
 {
-  "editor.formatOnSave": true
+  "editor.formatOnSave": true,
+  "files.associations": {
+    "iostream": "cpp",
+    "__bit_reference": "cpp",
+    "bitset": "cpp",
+    "chrono": "cpp",
+    "deque": "cpp",
+    "__memory": "cpp",
+    "filesystem": "cpp",
+    "limits": "cpp",
+    "ratio": "cpp",
+    "tuple": "cpp",
+    "type_traits": "cpp",
+    "vector": "cpp",
+    "__functional_base": "cpp",
+    "algorithm": "cpp",
+    "functional": "cpp",
+    "iterator": "cpp",
+    "memory": "cpp",
+    "__node_handle": "cpp",
+    "atomic": "cpp",
+    "cstddef": "cpp",
+    "locale": "cpp",
+    "optional": "cpp",
+    "system_error": "cpp"
+  }
 }
