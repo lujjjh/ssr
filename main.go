@@ -6,9 +6,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/jackc/puddle"
+	"github.com/jackc/puddle/puddleg"
+	_ "go.uber.org/automaxprocs"
+
 	v8 "github.com/lujjjh/ssr/v8"
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/reuseport"
 
 	esbuild "github.com/evanw/esbuild/pkg/api"
 )
@@ -18,6 +21,7 @@ func main() {
 		EntryPoints: []string{"src/entry.server.tsx"},
 		Outfile:     "dist/entry.server.mjs",
 		Bundle:      true,
+		Write:       true,
 		Target:      esbuild.ES2017,
 		Format:      esbuild.FormatESModule,
 	}).OutputFiles[0].Contents
@@ -30,7 +34,7 @@ func main() {
 		f *v8.Value
 	}
 
-	pool := puddle.NewPool(func(ctx context.Context) (res interface{}, err error) {
+	pool := puddleg.NewPool(func(ctx context.Context) (res entry, err error) {
 		isolate := v8.NewIsolate()
 		c := isolate.NewContext()
 
@@ -49,16 +53,20 @@ func main() {
 		f := module.Run(c)
 
 		return entry{c, f}, nil
-	}, func(res interface{}) {
-		e := res.(entry)
+	}, func(e entry) {
 		e.f.Dispose()
 		e.c.Dispose()
 		e.c.Isolate().Dispose()
-	}, int32(runtime.NumCPU()))
+	}, int32(runtime.GOMAXPROCS(0)))
+
+	ln, err := reuseport.Listen("tcp4", ":3000")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Println("Listening on :3000")
 
-	log.Fatal(fasthttp.ListenAndServe(":3000", func(c *fasthttp.RequestCtx) {
+	log.Fatal(fasthttp.Serve(ln, func(c *fasthttp.RequestCtx) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
@@ -69,7 +77,7 @@ func main() {
 		}
 		defer resource.Release()
 
-		e := resource.Value().(entry)
+		e := resource.Value()
 		c.SuccessString("text/html", e.f.Call().String())
 	}))
 }
